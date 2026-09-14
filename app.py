@@ -30,6 +30,14 @@ BYBIT_BASE_URLS = [
     "https://api.bytick.com",
 ]
 
+OKX_BASE_URLS = [
+    "https://www.okx.com",
+]
+
+KUCOIN_BASE_URLS = [
+    "https://api-futures.kucoin.com",
+]
+
 DURACAO_MS = {
     "W": 7 * 24 * 60 * 60 * 1000,
     "D": 24 * 60 * 60 * 1000,
@@ -151,36 +159,100 @@ st.markdown(
 
 
 # ============================================================
-# HTTP
+# HTTP — MÚLTIPLAS FONTES
 # ============================================================
-def _get_json(path: str, params: dict, timeout: int = 14) -> dict:
+def _request_json(
+    bases: list[str],
+    path: str,
+    params: dict,
+    timeout: int = 8,
+    tentativas: int = 3,
+) -> dict:
     ultimo_erro = None
 
-    for base in BYBIT_BASE_URLS:
-        try:
-            r = requests.get(
-                base + path,
-                params=params,
-                timeout=timeout,
-                headers={"User-Agent": "Scanner-2MV-Cripto/2.0"},
-            )
-            r.raise_for_status()
-            data = r.json()
+    for tentativa in range(tentativas):
+        for base in bases:
+            try:
+                r = requests.get(
+                    base + path,
+                    params=params,
+                    timeout=timeout,
+                    headers={
+                        "User-Agent": "Scanner-2MV-Cripto/9.0",
+                        "Accept": "application/json",
+                    },
+                )
 
-            if data.get("retCode") == 0:
-                return data
+                if r.status_code == 429:
+                    ultimo_erro = RuntimeError("limite temporário da API")
+                    continue
 
-            ultimo_erro = RuntimeError(
-                f"Bybit retCode={data.get('retCode')}: {data.get('retMsg')}"
-            )
-        except Exception as exc:
-            ultimo_erro = exc
+                r.raise_for_status()
+                return r.json()
 
-    raise RuntimeError(f"Falha ao consultar a Bybit: {ultimo_erro}")
+            except Exception as exc:
+                ultimo_erro = exc
+
+        if tentativa < tentativas - 1:
+            time.sleep(0.35 * (tentativa + 1))
+
+    raise RuntimeError(str(ultimo_erro))
+
+
+def _get_bybit_json(path: str, params: dict) -> dict:
+    data = _request_json(
+        BYBIT_BASE_URLS,
+        path,
+        params,
+        timeout=6,
+        tentativas=2,
+    )
+
+    if data.get("retCode") != 0:
+        raise RuntimeError(
+            f"Bybit retCode={data.get('retCode')}: "
+            f"{data.get('retMsg')}"
+        )
+
+    return data
+
+
+def _get_okx_json(path: str, params: dict) -> dict:
+    data = _request_json(
+        OKX_BASE_URLS,
+        path,
+        params,
+        timeout=8,
+        tentativas=3,
+    )
+
+    if str(data.get("code", "")) != "0":
+        raise RuntimeError(
+            f"OKX code={data.get('code')}: {data.get('msg')}"
+        )
+
+    return data
+
+
+def _get_kucoin_json(path: str, params: dict | None = None) -> dict:
+    data = _request_json(
+        KUCOIN_BASE_URLS,
+        path,
+        params or {},
+        timeout=8,
+        tentativas=3,
+    )
+
+    if str(data.get("code", "")) != "200000":
+        raise RuntimeError(
+            f"KuCoin code={data.get('code')}"
+        )
+
+    return data
 
 
 # ============================================================
-# UNIVERSO: TOP 100 + PERPÉTUOS USDT
+# UNIVERSO: TOP 100 + FUTUROS USDT
 # ============================================================
 @st.cache_data(ttl=3600, show_spinner=False)
 def carregar_top100() -> pd.DataFrame:
@@ -204,14 +276,20 @@ def instrumentos_bybit() -> list[dict]:
             "category": "linear",
             "limit": 1000,
         }
+
         if cursor:
             params["cursor"] = cursor
 
-        data = _get_json("/v5/market/instruments-info", params)
+        data = _get_bybit_json(
+            "/v5/market/instruments-info",
+            params,
+        )
+
         result = data.get("result", {})
         todos.extend(result.get("list", []))
 
         cursor = result.get("nextPageCursor") or ""
+
         if not cursor:
             break
 
@@ -220,22 +298,91 @@ def instrumentos_bybit() -> list[dict]:
     for x in todos:
         if str(x.get("status", "")).lower() != "trading":
             continue
+
         if str(x.get("quoteCoin", "")).upper() != "USDT":
             continue
+
         if str(x.get("settleCoin", "")).upper() != "USDT":
             continue
 
         contract_type = str(x.get("contractType", ""))
+
         if contract_type and contract_type != "LinearPerpetual":
             continue
 
         elegiveis.append(x)
+
+    if not elegiveis:
+        raise RuntimeError("Bybit não retornou contratos elegíveis")
+
+    return elegiveis
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def instrumentos_okx() -> list[dict]:
+    data = _get_okx_json(
+        "/api/v5/public/instruments",
+        {"instType": "SWAP"},
+    )
+
+    elegiveis = []
+
+    for x in data.get("data", []):
+        inst_id = str(x.get("instId", "")).upper()
+
+        if not inst_id.endswith("-USDT-SWAP"):
+            continue
+
+        estado = str(x.get("state", "")).lower()
+
+        if estado and estado != "live":
+            continue
+
+        elegiveis.append(x)
+
+    if not elegiveis:
+        raise RuntimeError("OKX não retornou contratos elegíveis")
+
+    return elegiveis
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def instrumentos_kucoin() -> list[dict]:
+    data = _get_kucoin_json(
+        "/api/v1/contracts/active",
+        {},
+    )
+
+    raw = data.get("data", [])
+
+    if isinstance(raw, dict):
+        raw = [raw]
+
+    elegiveis = []
+
+    for x in raw:
+        quote = str(x.get("quoteCurrency", "")).upper()
+        settle = str(x.get("settleCurrency", "")).upper()
+
+        if quote != "USDT" or settle != "USDT":
+            continue
+
+        elegiveis.append(x)
+
+    if not elegiveis:
+        raise RuntimeError("KuCoin não retornou contratos elegíveis")
 
     return elegiveis
 
 
 def _normalizar_base(base_coin: str) -> str:
     base = str(base_coin).upper().strip()
+
+    aliases = {
+        "XBT": "BTC",
+    }
+
+    base = aliases.get(base, base)
 
     for prefixo in ("1000000", "10000", "1000"):
         if base.startswith(prefixo) and len(base) > len(prefixo):
@@ -244,7 +391,7 @@ def _normalizar_base(base_coin: str) -> str:
     return base
 
 
-def _mapear_contratos(
+def _mapear_bybit(
     top100: pd.DataFrame,
     instrumentos: list[dict],
 ) -> pd.DataFrame:
@@ -253,16 +400,16 @@ def _mapear_contratos(
 
     for x in instrumentos:
         base = str(x.get("baseCoin", "")).upper().strip()
-        symbol = str(x.get("symbol", "")).upper().strip()
+        api_symbol = str(x.get("symbol", "")).upper().strip()
 
-        if not base or not symbol:
+        if not base or not api_symbol:
             continue
 
-        exatos.setdefault(base, symbol)
+        base_normal = _normalizar_base(base)
+        exatos.setdefault(base_normal, api_symbol)
 
-        normal = _normalizar_base(base)
-        if normal != base:
-            escalados.setdefault(normal, symbol)
+        if base_normal != base:
+            escalados.setdefault(base_normal, api_symbol)
 
     linhas = []
 
@@ -272,30 +419,120 @@ def _mapear_contratos(
         if int(row["stablecoin"]) == 1:
             continue
 
-        contrato = exatos.get(sym) or escalados.get(sym)
+        api_symbol = exatos.get(sym) or escalados.get(sym)
 
-        if not contrato:
+        if not api_symbol:
             continue
 
-        # A posição de mercado continua guardada internamente apenas para
-        # preservar a ordem da lista-base. Ela NÃO aparece na interface.
         linhas.append(
             {
                 "PosicaoMercado": int(row["rank"]),
                 "Nome": row["nome"],
                 "Ativo": sym,
-                "Contrato": contrato,
+                "Contrato": api_symbol,
+                "Fonte": "Bybit",
+                "InstrumentoAPI": api_symbol,
             }
         )
 
-    if not linhas:
-        return pd.DataFrame(
-            columns=["PosicaoMercado", "Nome", "Ativo", "Contrato"]
+    return pd.DataFrame(linhas)
+
+
+def _mapear_okx(
+    top100: pd.DataFrame,
+    instrumentos: list[dict],
+) -> pd.DataFrame:
+    mapa = {}
+
+    for x in instrumentos:
+        inst_id = str(x.get("instId", "")).upper().strip()
+
+        if not inst_id:
+            continue
+
+        base = _normalizar_base(inst_id.split("-")[0])
+        mapa.setdefault(base, inst_id)
+
+    linhas = []
+
+    for _, row in top100.iterrows():
+        sym = str(row["simbolo"]).upper().strip()
+
+        if int(row["stablecoin"]) == 1:
+            continue
+
+        api_symbol = mapa.get(sym)
+
+        if not api_symbol:
+            continue
+
+        linhas.append(
+            {
+                "PosicaoMercado": int(row["rank"]),
+                "Nome": row["nome"],
+                "Ativo": sym,
+                "Contrato": f"{sym}USDT",
+                "Fonte": "OKX",
+                "InstrumentoAPI": api_symbol,
+            }
         )
 
+    return pd.DataFrame(linhas)
+
+
+def _mapear_kucoin(
+    top100: pd.DataFrame,
+    instrumentos: list[dict],
+) -> pd.DataFrame:
+    mapa = {}
+
+    for x in instrumentos:
+        base = _normalizar_base(
+            x.get("baseCurrency", "")
+            or x.get("displayBaseCurrency", "")
+        )
+
+        api_symbol = str(
+            x.get("symbol", "")
+            or x.get("displaySymbol", "")
+        ).upper().strip()
+
+        if base and api_symbol:
+            mapa.setdefault(base, api_symbol)
+
+    linhas = []
+
+    for _, row in top100.iterrows():
+        sym = str(row["simbolo"]).upper().strip()
+
+        if int(row["stablecoin"]) == 1:
+            continue
+
+        api_symbol = mapa.get(sym)
+
+        if not api_symbol:
+            continue
+
+        linhas.append(
+            {
+                "PosicaoMercado": int(row["rank"]),
+                "Nome": row["nome"],
+                "Ativo": sym,
+                "Contrato": f"{sym}USDT",
+                "Fonte": "KuCoin",
+                "InstrumentoAPI": api_symbol,
+            }
+        )
+
+    return pd.DataFrame(linhas)
+
+
+def _ordenar_universo(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+
     return (
-        pd.DataFrame(linhas)
-        .sort_values("PosicaoMercado")
+        df.sort_values("PosicaoMercado")
         .reset_index(drop=True)
     )
 
@@ -303,12 +540,37 @@ def _mapear_contratos(
 # ============================================================
 # CANDLES E REGRA 2MV
 # ============================================================
-def _candles_fechados(
+def _preparar_estado_2mv(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+
+    df = df.copy()
+
+    df["sma20_high"] = df["high"].rolling(20).mean()
+    df["sma20_low"] = df["low"].rolling(20).mean()
+
+    def estado(r):
+        if pd.isna(r["sma20_high"]) or pd.isna(r["sma20_low"]):
+            return ""
+
+        if r["close"] > r["sma20_high"]:
+            return "verde"
+
+        if r["close"] < r["sma20_low"]:
+            return "vermelho"
+
+        return "branco"
+
+    df["estado"] = df.apply(estado, axis=1)
+    return df
+
+
+def _candles_bybit(
     symbol: str,
     interval: str,
-    limit: int = 80,
+    limit: int,
 ) -> pd.DataFrame:
-    data = _get_json(
+    data = _get_bybit_json(
         "/v5/market/kline",
         {
             "category": "linear",
@@ -319,6 +581,7 @@ def _candles_fechados(
     )
 
     raw = data.get("result", {}).get("list", [])
+
     if not raw:
         return pd.DataFrame()
 
@@ -349,7 +612,6 @@ def _candles_fechados(
 
     df = df.sort_values("startTime").reset_index(drop=True)
 
-    # Usa somente candle fechado.
     if not df.empty:
         agora = int(time.time() * 1000)
         dur = DURACAO_MS[interval]
@@ -367,33 +629,213 @@ def _candles_fechados(
         utc=True,
     )
 
-    df["sma20_high"] = df["high"].rolling(20).mean()
-    df["sma20_low"] = df["low"].rolling(20).mean()
+    return _preparar_estado_2mv(df)
 
-    def estado(r):
-        if pd.isna(r["sma20_high"]) or pd.isna(r["sma20_low"]):
-            return ""
 
-        if r["close"] > r["sma20_high"]:
-            return "verde"
+def _candles_okx(
+    symbol: str,
+    interval: str,
+    limit: int,
+) -> pd.DataFrame:
+    bar = {
+        "W": "1Wutc",
+        "D": "1Dutc",
+        "120": "2H",
+    }[interval]
 
-        if r["close"] < r["sma20_low"]:
-            return "vermelho"
+    data = _get_okx_json(
+        "/api/v5/market/candles",
+        {
+            "instId": symbol,
+            "bar": bar,
+            "limit": min(int(limit), 300),
+        },
+    )
 
-        return "branco"
+    raw = data.get("data", [])
 
-    df["estado"] = df.apply(estado, axis=1)
-    return df
+    if not raw:
+        return pd.DataFrame()
+
+    registros = []
+
+    for x in raw:
+        if len(x) < 9:
+            continue
+
+        # confirm=1 = candle fechado.
+        if str(x[8]) != "1":
+            continue
+
+        registros.append(
+            {
+                "startTime": x[0],
+                "open": x[1],
+                "high": x[2],
+                "low": x[3],
+                "close": x[4],
+                "volume": x[5],
+                "turnover": x[7],
+            }
+        )
+
+    df = pd.DataFrame(registros)
+
+    if df.empty:
+        return df
+
+    for c in ["open", "high", "low", "close", "volume", "turnover"]:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    df["startTime"] = pd.to_numeric(
+        df["startTime"],
+        errors="coerce",
+    )
+
+    df = df.dropna(
+        subset=["startTime", "open", "high", "low", "close"]
+    )
+
+    df = df.sort_values("startTime").reset_index(drop=True)
+
+    df["Data"] = pd.to_datetime(
+        df["startTime"],
+        unit="ms",
+        utc=True,
+    )
+
+    return _preparar_estado_2mv(df)
+
+
+def _candles_kucoin(
+    symbol: str,
+    interval: str,
+    limit: int,
+) -> pd.DataFrame:
+    granularity = {
+        "W": 10080,
+        "D": 1440,
+        "120": 120,
+    }[interval]
+
+    agora_ms = int(time.time() * 1000)
+    quantidade = max(int(limit) + 5, 30)
+    inicio_ms = agora_ms - (
+        quantidade * granularity * 60 * 1000
+    )
+
+    data = _get_kucoin_json(
+        "/api/v1/kline/query",
+        {
+            "symbol": symbol,
+            "granularity": granularity,
+            "from": inicio_ms,
+            "to": agora_ms,
+        },
+    )
+
+    raw = data.get("data", [])
+
+    if not raw:
+        return pd.DataFrame()
+
+    registros = []
+
+    for x in raw:
+        if len(x) < 7:
+            continue
+
+        registros.append(
+            {
+                "startTime": x[0],
+                "open": x[1],
+                "high": x[2],
+                "low": x[3],
+                "close": x[4],
+                "volume": x[5],
+                "turnover": x[6],
+            }
+        )
+
+    df = pd.DataFrame(registros)
+
+    for c in ["open", "high", "low", "close", "volume", "turnover"]:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    df["startTime"] = pd.to_numeric(
+        df["startTime"],
+        errors="coerce",
+    )
+
+    df = df.dropna(
+        subset=["startTime", "open", "high", "low", "close"]
+    )
+
+    # Algumas versões retornam timestamp em segundos; outras em ms.
+    if not df.empty and float(df["startTime"].median()) < 10_000_000_000:
+        df["startTime"] = df["startTime"] * 1000
+
+    df = df.sort_values("startTime").reset_index(drop=True)
+
+    if not df.empty:
+        dur = DURACAO_MS[interval]
+        ultimo_inicio = int(df.iloc[-1]["startTime"])
+
+        if ultimo_inicio + dur > agora_ms:
+            df = df.iloc[:-1].copy()
+
+    if df.empty:
+        return df
+
+    df["Data"] = pd.to_datetime(
+        df["startTime"],
+        unit="ms",
+        utc=True,
+    )
+
+    return _preparar_estado_2mv(df)
+
+
+def _candles_fechados(
+    fonte: str,
+    symbol_api: str,
+    interval: str,
+    limit: int = 80,
+) -> pd.DataFrame:
+    if fonte == "Bybit":
+        return _candles_bybit(
+            symbol_api,
+            interval,
+            limit,
+        )
+
+    if fonte == "OKX":
+        return _candles_okx(
+            symbol_api,
+            interval,
+            limit,
+        )
+
+    if fonte == "KuCoin":
+        return _candles_kucoin(
+            symbol_api,
+            interval,
+            limit,
+        )
+
+    raise RuntimeError("Fonte de mercado desconhecida")
 
 
 def _estado_atual(
-    symbol: str,
+    fonte: str,
+    symbol_api: str,
     interval: str,
 ) -> tuple[str, str]:
     df = _candles_fechados(
-        symbol,
+        fonte,
+        symbol_api,
         interval,
-        limit=55,
+        limit=28,
     )
 
     if len(df) < 22:
@@ -444,11 +886,26 @@ def _situacao(
 
 def _scan_um(row: dict) -> dict | None:
     try:
-        contrato = row["Contrato"]
+        fonte = row["Fonte"]
+        api_symbol = row["InstrumentoAPI"]
 
-        s, _ = _estado_atual(contrato, "W")
-        d, _ = _estado_atual(contrato, "D")
-        m120, prev120 = _estado_atual(contrato, "120")
+        s, _ = _estado_atual(
+            fonte,
+            api_symbol,
+            "W",
+        )
+
+        d, _ = _estado_atual(
+            fonte,
+            api_symbol,
+            "D",
+        )
+
+        m120, prev120 = _estado_atual(
+            fonte,
+            api_symbol,
+            "120",
+        )
 
         if not s or not d or not m120:
             return None
@@ -462,26 +919,26 @@ def _scan_um(row: dict) -> dict | None:
             "S": ICONE_ESTADO[s],
             "D": ICONE_ESTADO[d],
             "120": ICONE_ESTADO[m120],
-            "Situação": _situacao(s, d, m120, prev120),
+            "Situação": _situacao(
+                s,
+                d,
+                m120,
+                prev120,
+            ),
         }
 
     except Exception:
         return None
 
 
-@st.cache_data(ttl=120, show_spinner=False)
-def executar_scan() -> tuple[pd.DataFrame, dict]:
-    top100 = carregar_top100()
-    instrumentos = instrumentos_bybit()
-    universo = _mapear_contratos(
-        top100,
-        instrumentos,
-    )
-
+def _executar_universo(
+    universo: pd.DataFrame,
+    workers: int,
+) -> pd.DataFrame:
     resultados = []
     registros = universo.to_dict("records")
 
-    with ThreadPoolExecutor(max_workers=12) as pool:
+    with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {
             pool.submit(_scan_um, r): r
             for r in registros
@@ -493,35 +950,104 @@ def executar_scan() -> tuple[pd.DataFrame, dict]:
             if r:
                 resultados.append(r)
 
-    if resultados:
-        df = pd.DataFrame(resultados)
+    if not resultados:
+        return pd.DataFrame()
 
-        df["ordem_situacao"] = (
-            df["Situação"]
-            .map(SITUACAO_ORDEM)
-            .fillna(99)
-        )
+    df = pd.DataFrame(resultados)
 
-        df = (
-            df.sort_values("PosicaoMercado")
-            .reset_index(drop=True)
-        )
-    else:
-        df = pd.DataFrame()
+    df["ordem_situacao"] = (
+        df["Situação"]
+        .map(SITUACAO_ORDEM)
+        .fillna(99)
+    )
 
-    info = {
-        "top100": int(len(top100)),
-        "stablecoins_excluidas": int(
-            top100["stablecoin"].sum()
+    return (
+        df.sort_values("PosicaoMercado")
+        .reset_index(drop=True)
+    )
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def executar_scan() -> tuple[pd.DataFrame, dict]:
+    top100 = carregar_top100()
+    erros = []
+
+    provedores = [
+        (
+            "Bybit",
+            instrumentos_bybit,
+            _mapear_bybit,
+            10,
         ),
-        "perpetuos_encontrados": int(len(universo)),
-        "analisados": int(len(df)),
-        "atualizado_em": datetime.now(
-            ZoneInfo("America/Recife")
-        ).strftime("%d/%m/%Y %H:%M"),
-    }
+        (
+            "OKX",
+            instrumentos_okx,
+            _mapear_okx,
+            5,
+        ),
+        (
+            "KuCoin",
+            instrumentos_kucoin,
+            _mapear_kucoin,
+            5,
+        ),
+    ]
 
-    return df, info
+    for nome, obter_instrumentos, mapear, workers in provedores:
+        try:
+            instrumentos = obter_instrumentos()
+            universo = _ordenar_universo(
+                mapear(
+                    top100,
+                    instrumentos,
+                )
+            )
+
+            if len(universo) < 10:
+                raise RuntimeError(
+                    f"somente {len(universo)} contratos compatíveis"
+                )
+
+            df = _executar_universo(
+                universo,
+                workers=workers,
+            )
+
+            minimo_aceitavel = max(
+                10,
+                int(len(universo) * 0.55),
+            )
+
+            if len(df) < minimo_aceitavel:
+                raise RuntimeError(
+                    f"somente {len(df)} de {len(universo)} "
+                    "ativos retornaram candles"
+                )
+
+            info = {
+                "top100": int(len(top100)),
+                "stablecoins_excluidas": int(
+                    top100["stablecoin"].sum()
+                ),
+                "perpetuos_encontrados": int(len(universo)),
+                "analisados": int(len(df)),
+                "fonte": nome,
+                "atualizado_em": datetime.now(
+                    ZoneInfo("America/Recife")
+                ).strftime("%d/%m/%Y %H:%M"),
+            }
+
+            return df, info
+
+        except Exception as exc:
+            erros.append(
+                f"{nome}: {type(exc).__name__}: {exc}"
+            )
+
+    raise RuntimeError(
+        "Nenhuma fonte pública de futuros respondeu. "
+        + " | ".join(erros)
+    )
 
 
 # ============================================================
@@ -642,8 +1168,15 @@ if atualizar:
     st.cache_data.clear()
     st.rerun()
 
-with st.spinner("Consultando a Bybit e calculando o 2MV..."):
-    df_scan, info_scan = executar_scan()
+try:
+    with st.spinner("Consultando o mercado de futuros e calculando o 2MV..."):
+        df_scan, info_scan = executar_scan()
+except Exception as exc:
+    st.error(
+        "Não consegui acessar as fontes públicas de futuros agora. "
+        "Clique em Atualizar daqui a pouco."
+    )
+    st.stop()
 
 with c_info:
     st.caption(
@@ -653,7 +1186,7 @@ with c_info:
 if df_scan.empty:
     st.error(
         "Não foi possível montar o scanner agora. "
-        "Verifique a conexão com a Bybit e tente Atualizar novamente."
+        "Tente Atualizar novamente em alguns instantes."
     )
     st.stop()
 
@@ -993,7 +1526,8 @@ def conteudo_principal(df_base: pd.DataFrame):
 
         try:
             df_graf = _candles_fechados(
-                contrato,
+                registro["Fonte"],
+                registro["InstrumentoAPI"],
                 periodo_api,
                 limit=limite + 25,
             )
