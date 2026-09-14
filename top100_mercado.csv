@@ -1,0 +1,101 @@
+﻿rank,nome,simbolo,stablecoin
+1,Bitcoin,BTC,0
+2,Ethereum,ETH,0
+3,Tether,USDT,1
+4,BNB,BNB,0
+5,XRP,XRP,0
+6,USDC,USDC,1
+7,Solana,SOL,0
+8,TRON,TRX,0
+9,Hyperliquid,HYPE,0
+10,Zcash,ZEC,0
+11,Dogecoin,DOGE,0
+12,Monero,XMR,0
+13,Chainlink,LINK,0
+14,UNUS SED LEO,LEO,0
+15,Cardano,ADA,0
+16,Stellar,XLM,0
+17,Ethena USDe,USDe,1
+18,Dai,DAI,1
+19,Bitcoin Cash,BCH,0
+20,World Liberty Financial USD,USD1,1
+21,Litecoin,LTC,0
+22,Uniswap,UNI,0
+23,Gram (prev. Toncoin),GRAM,0
+24,Canton,CC,0
+25,Hedera,HBAR,0
+26,Global Dollar,USDG,1
+27,Avalanche,AVAX,0
+28,Shiba Inu,SHIB,0
+29,NEAR Protocol,NEAR,0
+30,Sui,SUI,0
+31,Cronos,CRO,0
+32,PayPal USD,PYUSD,1
+33,Tether Gold,XAUt,0
+34,Bittensor,TAO,0
+35,MemeCore,M,0
+36,Ripple USD,RLUSD,1
+37,OKB,OKB,0
+38,Aave,AAVE,0
+39,PAX Gold,PAXG,0
+40,Aster,ASTER,0
+41,Mantle,MNT,0
+42,World Liberty Financial,WLFI,0
+43,Polkadot,DOT,0
+44,Ondo,ONDO,0
+45,Pump.fun,PUMP,0
+46,Internet Computer,ICP,0
+47,USDD,USDD,1
+48,Sky,SKY,0
+49,Pepe,PEPE,0
+50,Ethena,ENA,0
+51,Worldcoin,WLD,0
+52,Bitget Token,BGB,0
+53,United Stables,U,1
+54,Ethereum Classic,ETC,0
+55,Morpho,MORPHO,0
+56,Pi,PI,0
+57,Lighter,LIT,0
+58,Venice Token,VVV,0
+59,Polygon (prev. MATIC),POL,0
+60,GateToken,GT,0
+61,KuCoin Token,KCS,0
+62,Kaspa,KAS,0
+63,JUST,JST,0
+64,Arbitrum,ARB,0
+65,Algorand,ALGO,0
+66,Cosmos,ATOM,0
+67,PancakeSwap,CAKE,0
+68,Filecoin,FIL,0
+69,Jupiter,JUP,0
+70,Quant,QNT,0
+71,Stable,STABLE,1
+72,Render,RENDER,0
+73,Dash,DASH,0
+74,VeChain,VET,0
+75,ether.fi,ETHFI,0
+76,Injective,INJ,0
+77,XDC Network,XDC,0
+78,Flare,FLR,0
+79,Aerodrome Finance,AERO,0
+80,Curve DAO Token,CRV,0
+81,Nexo,NEXO,0
+82,OFFICIAL TRUMP,TRUMP,0
+83,Aptos,APT,0
+84,TrueUSD,TUSD,1
+85,Stacks,STX,0
+86,币安人生,币安人生,0
+87,EURC,EURC,1
+88,SPX6900,SPX,0
+89,Falcon Finance,FF,0
+90,Pudgy Penguins,PENGU,0
+91,Pyth Network,PYTH,0
+92,Virtuals Protocol,VIRTUAL,0
+93,Raydium,RAY,0
+94,Artificial Superintelligence Alliance,FET,0
+95,Pons,PONS,0
+96,LayerZero,ZRO,0
+97,Lisk,LSK,0
+98,Pendle,PENDLE,0
+99,Bitcoin SV,BSV,0
+100,Pieverse,PIEVERSE,0
