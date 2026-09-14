@@ -9,6 +9,3 @@ Correção:
 ```bash
 python -m streamlit run app.py
 ```
-
-Abrir:
-http://localhost:8501
