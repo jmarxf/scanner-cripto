@@ -540,28 +540,254 @@ def _ordenar_universo(df: pd.DataFrame) -> pd.DataFrame:
 # ============================================================
 # CANDLES E REGRA 2MV
 # ============================================================
+def _rma_wilder(serie: pd.Series, periodo: int = 14) -> pd.Series:
+    """
+    Wilder Moving Average (RMA), usada no DMI clássico.
+    """
+    s = pd.to_numeric(
+        serie,
+        errors="coerce",
+    ).astype("float64")
+
+    out = pd.Series(
+        float("nan"),
+        index=s.index,
+        dtype="float64",
+    )
+
+    if len(s) < periodo:
+        return out
+
+    s = s.fillna(0.0)
+
+    out.iloc[periodo - 1] = (
+        s.iloc[:periodo].mean()
+    )
+
+    for i in range(periodo, len(s)):
+        out.iloc[i] = (
+            (
+                out.iloc[i - 1]
+                * (periodo - 1)
+            )
+            + s.iloc[i]
+        ) / periodo
+
+    return out
+
+
 def _preparar_estado_2mv(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Mantém a mesma estrutura visual do scanner.
+
+    Por dentro, a cor final só é confirmada quando:
+    - VERDE: Close > SMA20 High E +DI > -DI
+    - VERMELHO: Close < SMA20 Low E -DI > +DI
+    - BRANCO: qualquer outra combinação
+
+    O estado puro das médias fica preservado em 'estado_2mv_raw'
+    para que ALERTA/COMPRA/VENDA continuem respeitando a transição
+    real do preço, e não um simples cruzamento tardio do DMI.
+    """
     if df.empty:
         return df
 
     df = df.copy()
 
-    df["sma20_high"] = df["high"].rolling(20).mean()
-    df["sma20_low"] = df["low"].rolling(20).mean()
+    # --------------------------------------------------------
+    # 2MV original
+    # --------------------------------------------------------
+    df["sma20_high"] = (
+        df["high"]
+        .rolling(20)
+        .mean()
+    )
 
-    def estado(r):
-        if pd.isna(r["sma20_high"]) or pd.isna(r["sma20_low"]):
-            return ""
+    df["sma20_low"] = (
+        df["low"]
+        .rolling(20)
+        .mean()
+    )
 
-        if r["close"] > r["sma20_high"]:
-            return "verde"
+    df["estado_2mv_raw"] = ""
 
-        if r["close"] < r["sma20_low"]:
-            return "vermelho"
+    valido_2mv = (
+        df["sma20_high"].notna()
+        & df["sma20_low"].notna()
+    )
 
-        return "branco"
+    df.loc[
+        valido_2mv
+        & (
+            df["close"]
+            > df["sma20_high"]
+        ),
+        "estado_2mv_raw",
+    ] = "verde"
 
-    df["estado"] = df.apply(estado, axis=1)
+    df.loc[
+        valido_2mv
+        & (
+            df["close"]
+            < df["sma20_low"]
+        ),
+        "estado_2mv_raw",
+    ] = "vermelho"
+
+    df.loc[
+        valido_2mv
+        & (
+            df["estado_2mv_raw"] == ""
+        ),
+        "estado_2mv_raw",
+    ] = "branco"
+
+    # --------------------------------------------------------
+    # DMI 14 — somente +DI / -DI.
+    # O segundo "14" do DMI 14/14 é a suavização do ADX;
+    # como o ADX não participa da nossa confirmação, não
+    # precisamos calculá-lo.
+    # --------------------------------------------------------
+    high = pd.to_numeric(
+        df["high"],
+        errors="coerce",
+    )
+
+    low = pd.to_numeric(
+        df["low"],
+        errors="coerce",
+    )
+
+    close = pd.to_numeric(
+        df["close"],
+        errors="coerce",
+    )
+
+    movimento_alta = high.diff()
+    movimento_baixa = -low.diff()
+
+    plus_dm = pd.Series(
+        0.0,
+        index=df.index,
+        dtype="float64",
+    )
+
+    minus_dm = pd.Series(
+        0.0,
+        index=df.index,
+        dtype="float64",
+    )
+
+    mascara_plus = (
+        (movimento_alta > movimento_baixa)
+        & (movimento_alta > 0)
+    )
+
+    mascara_minus = (
+        (movimento_baixa > movimento_alta)
+        & (movimento_baixa > 0)
+    )
+
+    plus_dm.loc[mascara_plus] = (
+        movimento_alta.loc[mascara_plus]
+    )
+
+    minus_dm.loc[mascara_minus] = (
+        movimento_baixa.loc[mascara_minus]
+    )
+
+    fechamento_anterior = close.shift(1)
+
+    true_range = pd.concat(
+        [
+            high - low,
+            (high - fechamento_anterior).abs(),
+            (low - fechamento_anterior).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+
+    tr_rma = _rma_wilder(
+        true_range,
+        14,
+    )
+
+    plus_rma = _rma_wilder(
+        plus_dm,
+        14,
+    )
+
+    minus_rma = _rma_wilder(
+        minus_dm,
+        14,
+    )
+
+    denominador = tr_rma.replace(
+        0,
+        float("nan"),
+    )
+
+    df["dmi_plus"] = (
+        100.0
+        * plus_rma
+        / denominador
+    )
+
+    df["dmi_minus"] = (
+        100.0
+        * minus_rma
+        / denominador
+    )
+
+    # --------------------------------------------------------
+    # COR FINAL CONFIRMADA
+    # --------------------------------------------------------
+    df["estado"] = ""
+
+    # Branco das médias continua branco, independentemente do DMI.
+    df.loc[
+        df["estado_2mv_raw"] == "branco",
+        "estado",
+    ] = "branco"
+
+    # Alta somente com médias + DMI alinhados.
+    df.loc[
+        (
+            df["estado_2mv_raw"] == "verde"
+        )
+        & (
+            df["dmi_plus"]
+            > df["dmi_minus"]
+        ),
+        "estado",
+    ] = "verde"
+
+    # Baixa somente com médias + DMI alinhados.
+    df.loc[
+        (
+            df["estado_2mv_raw"] == "vermelho"
+        )
+        & (
+            df["dmi_minus"]
+            > df["dmi_plus"]
+        ),
+        "estado",
+    ] = "vermelho"
+
+    # Se o preço saiu das médias, mas o DMI não confirmou,
+    # o resultado visual/operacional é branco.
+    df.loc[
+        (
+            df["estado_2mv_raw"].isin(
+                ["verde", "vermelho"]
+            )
+        )
+        & (
+            df["estado"] == ""
+        ),
+        "estado",
+    ] = "branco"
+
     return df
 
 
@@ -830,53 +1056,88 @@ def _estado_atual(
     fonte: str,
     symbol_api: str,
     interval: str,
-) -> tuple[str, str]:
+) -> tuple[str, str, str]:
+    # Um pouco mais de histórico deixa a RMA de Wilder mais estável.
     df = _candles_fechados(
         fonte,
         symbol_api,
         interval,
-        limit=28,
+        limit=60,
     )
 
     if len(df) < 22:
-        return "", ""
+        return "", "", ""
 
     return (
         str(df.iloc[-1]["estado"]),
-        str(df.iloc[-2]["estado"]),
+        str(df.iloc[-1]["estado_2mv_raw"]),
+        str(df.iloc[-2]["estado_2mv_raw"]),
     )
 
 
 def _situacao(
-    s: str,
-    d: str,
-    m120: str,
-    prev120: str,
+    s_confirmado: str,
+    d_confirmado: str,
+    m120_confirmado: str,
+    s_raw: str,
+    m120_raw: str,
+    prev120_raw: str,
 ) -> str:
+    """
+    DMI funciona como filtro interno.
+
+    Semanal:
+    - mantém o papel de contexto do 2MV original;
+    - uma divergência DMI transforma a cor exibida em branco,
+      mas NÃO permite inverter o contexto semanal.
+
+    Diário:
+    - precisa estar VERDE/VERMELHO já confirmado pelo DMI.
+
+    120:
+    - COMPRA/VENDA só existem se a cor atual estiver confirmada;
+    - a transição usada como gatilho continua sendo a transição
+      pura das médias, impedindo um cruzamento tardio do DMI de
+      gerar uma falsa "nova entrada".
+    """
     contexto_alta = (
-        s in ("verde", "branco")
-        and d == "verde"
+        s_raw in ("verde", "branco")
+        and d_confirmado == "verde"
     )
 
     contexto_baixa = (
-        s in ("vermelho", "branco")
-        and d == "vermelho"
+        s_raw in ("vermelho", "branco")
+        and d_confirmado == "vermelho"
     )
 
     if contexto_alta:
-        if m120 == "verde" and prev120 == "branco":
+        if (
+            m120_confirmado == "verde"
+            and m120_raw == "verde"
+            and prev120_raw == "branco"
+        ):
             return "COMPRA"
 
-        if m120 == "branco" and prev120 == "vermelho":
+        if (
+            m120_raw == "branco"
+            and prev120_raw == "vermelho"
+        ):
             return "ALERTA COMPRA"
 
         return "ALTA — AGUARDAR"
 
     if contexto_baixa:
-        if m120 == "vermelho" and prev120 == "branco":
+        if (
+            m120_confirmado == "vermelho"
+            and m120_raw == "vermelho"
+            and prev120_raw == "branco"
+        ):
             return "VENDA"
 
-        if m120 == "branco" and prev120 == "verde":
+        if (
+            m120_raw == "branco"
+            and prev120_raw == "verde"
+        ):
             return "ALERTA VENDA"
 
         return "BAIXA — AGUARDAR"
@@ -889,19 +1150,19 @@ def _scan_um(row: dict) -> dict | None:
         fonte = row["Fonte"]
         api_symbol = row["InstrumentoAPI"]
 
-        s, _ = _estado_atual(
+        s, s_raw, _ = _estado_atual(
             fonte,
             api_symbol,
             "W",
         )
 
-        d, _ = _estado_atual(
+        d, d_raw, _ = _estado_atual(
             fonte,
             api_symbol,
             "D",
         )
 
-        m120, prev120 = _estado_atual(
+        m120, m120_raw, prev120_raw = _estado_atual(
             fonte,
             api_symbol,
             "120",
@@ -912,10 +1173,10 @@ def _scan_um(row: dict) -> dict | None:
 
         return {
             **row,
-            "S_raw": s,
-            "D_raw": d,
-            "120_raw": m120,
-            "Prev120_raw": prev120,
+            "S_raw": s_raw,
+            "D_raw": d_raw,
+            "120_raw": m120_raw,
+            "Prev120_raw": prev120_raw,
             "S": ICONE_ESTADO[s],
             "D": ICONE_ESTADO[d],
             "120": ICONE_ESTADO[m120],
@@ -923,7 +1184,9 @@ def _scan_um(row: dict) -> dict | None:
                 s,
                 d,
                 m120,
-                prev120,
+                s_raw,
+                m120_raw,
+                prev120_raw,
             ),
         }
 
