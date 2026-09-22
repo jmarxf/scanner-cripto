@@ -60,11 +60,9 @@ ICONE_ESTADO = {
 SITUACAO_ORDEM = {
     "COMPRA": 0,
     "ALERTA COMPRA": 1,
-    "ALTA — AGUARDAR": 2,
-    "NEUTRO": 3,
-    "BAIXA — AGUARDAR": 4,
-    "ALERTA VENDA": 5,
-    "VENDA": 6,
+    "NEUTRO": 2,
+    "ALERTA VENDA": 3,
+    "VENDA": 4,
 }
 
 
@@ -1079,68 +1077,53 @@ def _situacao(
     s_confirmado: str,
     d_confirmado: str,
     m120_confirmado: str,
-    s_raw: str,
-    m120_raw: str,
-    prev120_raw: str,
 ) -> str:
     """
-    DMI funciona como filtro interno.
+    Situação baseada exclusivamente nas cores já confirmadas
+    pelo alinhamento entre 2MV e DMI.
 
-    Semanal:
-    - mantém o papel de contexto do 2MV original;
-    - uma divergência DMI transforma a cor exibida em branco,
-      mas NÃO permite inverter o contexto semanal.
+    COMPRA:
+        S verde + D verde + 120 verde
 
-    Diário:
-    - precisa estar VERDE/VERMELHO já confirmado pelo DMI.
+    ALERTA COMPRA:
+        S verde + D verde + 120 branco
 
-    120:
-    - COMPRA/VENDA só existem se a cor atual estiver confirmada;
-    - a transição usada como gatilho continua sendo a transição
-      pura das médias, impedindo um cruzamento tardio do DMI de
-      gerar uma falsa "nova entrada".
+    VENDA:
+        S vermelho + D vermelho + 120 vermelho
+
+    ALERTA VENDA:
+        S vermelho + D vermelho + 120 branco
+
+    Qualquer outra combinação:
+        NEUTRO
     """
-    contexto_alta = (
-        s_raw in ("verde", "branco")
+    if (
+        s_confirmado == "verde"
         and d_confirmado == "verde"
-    )
+        and m120_confirmado == "verde"
+    ):
+        return "COMPRA"
 
-    contexto_baixa = (
-        s_raw in ("vermelho", "branco")
+    if (
+        s_confirmado == "verde"
+        and d_confirmado == "verde"
+        and m120_confirmado == "branco"
+    ):
+        return "ALERTA COMPRA"
+
+    if (
+        s_confirmado == "vermelho"
         and d_confirmado == "vermelho"
-    )
+        and m120_confirmado == "vermelho"
+    ):
+        return "VENDA"
 
-    if contexto_alta:
-        if (
-            m120_confirmado == "verde"
-            and m120_raw == "verde"
-            and prev120_raw == "branco"
-        ):
-            return "COMPRA"
-
-        if (
-            m120_raw == "branco"
-            and prev120_raw == "vermelho"
-        ):
-            return "ALERTA COMPRA"
-
-        return "ALTA — AGUARDAR"
-
-    if contexto_baixa:
-        if (
-            m120_confirmado == "vermelho"
-            and m120_raw == "vermelho"
-            and prev120_raw == "branco"
-        ):
-            return "VENDA"
-
-        if (
-            m120_raw == "branco"
-            and prev120_raw == "verde"
-        ):
-            return "ALERTA VENDA"
-
-        return "BAIXA — AGUARDAR"
+    if (
+        s_confirmado == "vermelho"
+        and d_confirmado == "vermelho"
+        and m120_confirmado == "branco"
+    ):
+        return "ALERTA VENDA"
 
     return "NEUTRO"
 
@@ -1184,9 +1167,6 @@ def _scan_um(row: dict) -> dict | None:
                 s,
                 d,
                 m120,
-                s_raw,
-                m120_raw,
-                prev120_raw,
             ),
         }
 
